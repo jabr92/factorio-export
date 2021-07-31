@@ -1,224 +1,349 @@
-local json = require "lib/json"
-local default_file = "export.json"
-
-local function round(number, digits)
-    return math.floor(number * 10 ^ digits + 0.5) / 10 ^ digits
+require("json")
+ 
+function getEnergyData(prototype, data)
+    if prototype.burner_prototype ~= nil then
+        data["burner_effectivity"]=prototype.burner_prototype.effectivity
+        data["fuel_categories"]=prototype.burner_prototype.fuel_categories
+        data["emissions"]=prototype.burner_prototype.emissions
+    elseif prototype.electric_energy_source_prototype ~= nil then
+        data["drain"]=prototype.electric_energy_source_prototype.drain*60
+        data["emissions"]=prototype.electric_energy_source_prototype.emissions
+    end
+    return data
 end
-
-local function itemStackTable(stack)
-    local amount
-    if (stack.amount ~= nil) then
-        amount = stack.amount
-    else
-        amount = stack.probability * (stack.amount_min + stack.amount_max) / 2
+ 
+function acquireData(event)
+    local playersettings = settings.get_player_settings(game.players[event.player_index])
+    if not playersettings["recipelister-output"].value then
+        log("beep i'm out") --why did you enable the mod?
+        return
     end
 
-    return {
-        name = stack.name,
-        type = stack.type,
-        amount = amount
-    }
-end
 
-local function itemStackListTable(list)
-    local result = {}
-    for i, stack in ipairs(list) do
-        local t = itemStackTable(stack)
-        if (t) then
-            table.insert(result, itemStackTable(stack))
+    local entries = {
+        recipe = {
+            "name",
+            "localised_name",
+            "category",
+            "order",
+            "group",
+            "subgroup",
+            "enabled",
+            "emissions_multiplier",
+            "energy",
+			"ingredients",
+			"products",
+            "main_product"},
+        inserter = {
+            "name",
+			"localised_name",
+			"max_energy_usage",
+			"inserter_extension_speed",
+			"inserter_rotation_speed",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"},
+        resource = {
+            "name",
+			"localised_name",
+			"resource_category",
+			"mineable_properties",
+			"autoplace_specification"},
+        item = {
+            "name",
+			"localised_name",
+			"type",
+			"order",
+			"fuel_value",
+			"category",
+            "stack_size",
+			"tier",
+			"module_effects",
+			"limitations",
+			"fuel_category",
+			"fuel_acceleration_multiplier",
+			"fuel_top_speed_multiplier",
+			"rocket_launch_products",
+			"attack_parameters",
+			"place_result",
+			"burnt_result",
+			"equipment_grid",
+            "place_as_equipment_result",
+            "place_as_tile_result",},
+        fluid = {
+            "name",
+			"localised_name",
+			"order",
+			"default_temperature",
+			"max_temperature",
+			"fuel_value",
+			"emissions_multiplier"},
+        technology = {
+            "name",
+			"localised_name",
+			"effects",
+			"research_unit_ingredients",
+			"research_unit_count",
+			"research_unit_energy",
+			"max_level",
+			"research_unit_count_formula"},    
+        boiler = {
+            "name",
+			"localised_name",
+			"max_energy_usage",
+			"target_temperature",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"},
+        generator = {
+            "name",
+			"localised_name",
+			"maximum_temperature",
+			"effectivity",
+			"fluid_usage_per_tick",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"},
+        reactor = {
+            "name",
+			"localised_name",
+			"max_energy_usage",
+			"neighbour_bonus",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"},
+        lab = {
+            "name",
+			"localised_name",
+			"energy_usage",
+			"lab_inputs",
+			"researching_speed",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"},
+        equipment = {
+            "name",
+            "type",
+			"localised_name",
+            "shape",
+            "energy_production",
+            "shield",
+            "energy_per_shield",
+            "energy_consumption",
+            "equipment_categories",
+            "attack_parameters",
+            "background_color"},
+        tile = {
+            "name",
+            "localised_name",
+            "collision_mask_with_flags",
+            "layer",
+            "autoplace_specification",
+            "walking_speed_modifier",
+            "vehicle_friction_modifier",
+            "emissions_per_second",
+            "map_color"}
+    }
+    entries["assembling-machine"] = {
+            "name",
+			"localised_name",
+			"type",
+			"energy_usage",
+			"ingredient_count",
+			"crafting_speed",
+			"crafting_categories",
+			"module_inventory_size",
+			"allowed_effects",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"}
+    entries.furnace = entries["assembling-machine"]
+    entries["mining-drill"] = {
+            "name",
+			"localised_name",
+			"energy_usage",
+			"mining_speed",
+			"resource_categories",
+			"allowed_effects",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"}
+    entries["transport-belt"] = {
+            "name",
+			"localised_name",
+			"belt_speed",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"}
+    entries["solar-panel"] = {
+            "name",
+			"localised_name",
+			"max_energy_production",
+            "map_color",
+            "friendly_map_color",
+            "enemy_map_color"}
+    entries["equipment-grid"] = {
+            "name",
+			"localised_name",
+			"equipment_categories",
+            "width",
+            "height"}
+            
+    local outdata = {}
+    local enabled_types = {}
+    local blacklist = {}
+
+    local entities = {
+            "assembling-machine",
+			"furnace",
+			"resource",
+			"inserter",
+			"transport-belt",
+			"mining-drill",
+			"boiler",
+			"generator",
+			"reactor",
+			"lab"}
+   
+    -- read settings
+    for k,v in pairs(playersettings) do
+        if (string.sub(k,1,20) == "recipelister-enable-") and v.value then
+            category = string.sub(k,21)
+            enabled_types[category]=v.value
+            outdata[category] = {}
         end
     end
-    return result
-end
-
-local function moduleTable(module)
-    local result = {
-        name = module.name,
-        module_effects = {},
-        category = module.category,
-        tier = module.tier
-    }
-
-    if (#module.limitations ~= 0) then
-        result.limitations = module.limitations
-    end
-
-    for effect, tbl in pairs(module.module_effects) do
-        result.module_effects[effect] = round(tbl.bonus, 4)
-    end
-
-    return result
-end
-
-local function recipeTable(recipe)
-    local result = {
-        name = recipe.name,
-        category = recipe.category,
-        ingredients = recipe.ingredients,
-        energy = recipe.energy
-    }
-
-    result.products = itemStackListTable(recipe.products)
-    return result
-end
-
-local function itemTable(item)
-    return {
-        name = item.name,
-        type = item.type,
-        stack_size = item.stack_size
-    }
-end
-
-local function fluidTable(fluid)
-    return {
-        name = fluid.name,
-        type = "fluid"
-    }
-end
-
-local function assemblerTable(assembler)
-    local result = {
-        name = assembler.name,
-        crafting_speed = assembler.crafting_speed,
-        ingredient_count = assembler.ingredient_count,
-        allowed_effects = assembler.allowed_effects,
-        module_inventory_size = assembler.module_inventory_size,
-        crafting_categories = {}
-    }
-
-    for category, bool in pairs(assembler.crafting_categories) do
-        if bool then
-            table.insert(result.crafting_categories, category)
+    
+    -- setup prototypes to read
+    local game_prototypes = {} 
+    for _,enttype in pairs(entities) do
+        if enabled_types[enttype] then
+            game_prototypes.entity = game.entity_prototypes
+            break
         end
     end
-
-    return result
-end
-
-local function minerTable(miner)
-    local result = {
-        name = miner.name,
-        mining_speed = miner.mining_speed,
-        resource_categories = {},
-        allowed_effects = miner.allowed_effects or {}
-    }
-
-    for category, bool in pairs(miner.resource_categories) do
-        if bool then
-            table.insert(result.resource_categories, category)
-        end
+    
+    if enabled_types.recipe then
+        game_prototypes.recipe = game.recipe_prototypes
     end
-
-    return result
-end
-
-local function resourceTable(resource)
-    result = {
-        name = resource.name,
-        resource_category = resource.resource_category,
-        mining_time = resource.mineable_properties.mining_time,
-
-        infinite = resource.infinite_resource ,
-        minimum = resource.minimum_resource_amount ,
-        
-        products  = itemStackListTable(resource.mineable_properties.products )
-    }
-
-    if (resource.mineable_properties.required_fluid ~= nil) then
-        result.required_fluid = {
-            name = resource.mineable_properties .required_fluid,
-            amount = resource.mineable_properties .fluid_amount,
-            type = "fluid"
-        }
+    if enabled_types.item then
+        game_prototypes.item = game.item_prototypes
     end
-
-    return result
-end
-
-local function launchProductRecipe(item)
-    local stacks = itemStackListTable(item.rocket_launch_products)
-    if #stacks == 0 then
-        return nil
-    elseif #stacks == 1 then
-        return {
-            name = stacks[1].name,
-            category = "rocket-building",
-            energy = 42, --the time required for the launch animation
-            ingredients = {
-                {
-                    name = item.name,
-                    type = item.type,
-                    amount = 1
-                },
-                {
-                    name = "rocket-part",
-                    type = "item",
-                    amount = game.entity_prototypes["rocket-silo"].rocket_parts_required
-                }
-            },
-            products = stacks
-        }
-    else
-        error(#stacks .. " launch products for " .. item.name)
+    if enabled_types.fluid then
+        game_prototypes.fluid = game.fluid_prototypes
     end
-end
-
-local function onCommand(event)
-    local output = {}
-
-    output.recipes = {}
-    for name, recipe in pairs(game.recipe_prototypes) do
-        output.recipes[name] = recipeTable(recipe)
+    if enabled_types.technology then
+        game_prototypes.technology = game.technology_prototypes
     end
-
-    output.items = {}
-    output.modules = {}
-    for name, item in pairs(game.item_prototypes) do
-        output.items[name] = itemTable(item)
-
-        if (item.type == "module") then
-            output.modules[name] = moduleTable(item)
-        end
-
-        if (item.rocket_launch_products) then
-            local launch = launchProductRecipe(item)
-            if launch then
-                if output.recipes[launch.name] then
-                    error(
-                        "there's already a recipe called " .. stacks[1].name .. ", can't overwrite with launch recipe"
-                    )
+    if enabled_types.tile then
+        game_prototypes.tile = game.tile_prototypes
+    end
+    if enabled_types.equipment then
+        game_prototypes.equipment = game.equipment_prototypes
+    end
+    if enabled_types["equipment-grid"]then
+        game_prototypes["equipment-grid"] = game.equipment_grid_prototypes
+    end
+   
+    -- read data
+    for thetype,prototypes in pairs(game_prototypes) do
+        for _,prototype in pairs(prototypes) do
+            log(prototype.name)
+            local t = thetype
+            if thetype == "entity" then
+                t = prototype.type
+            end
+            if enabled_types[t] then
+                local data = {}
+                for _, entry in pairs(entries[t]) do
+                    if entry == "group" or entry == "subgroup" then
+                        data[entry]={name = prototype[entry].name, type = prototype[entry].type}
+                    elseif entry == "energy_usage" or entry == "belt_speed" or entry == "max_energy_usage" or entry == "max_energy_production" then
+                        data[entry]=60*prototype[entry] -- prototype numbers were per tick
+                    elseif entry == "burnt_result" or entry == "equipment_grid" or entry == "place_result" or entry == "place_as_equipment_result" or entry == "place_as_tile_result" then
+                        if prototype[entry] and prototype[entry].name then
+                            data[entry] = prototype[entry].name
+                        end
+                    elseif entry == "rocket_launch_products" then
+                        if prototype[entry] and prototype[entry][1] then
+                            data[entry] = prototype[entry]
+                        end
+                    elseif entry == "fuel_acceleration_multiplier" or entry == "fuel_top_speed_multiplier" then
+                        if prototype.fuel_value and prototype.fuel_value ~= 0 then
+                            data[entry] = prototype[entry]
+                        end
+                    -- elseif entry == "map_color" or entry == "friendly_map_color" or entry == "enemy_map_color" and prototype[entry] ~= nil then
+                        -- data[entry] = {r = prototype[entry].r,g = prototype[entry].g,b = prototype[entry].b,a = prototype[entry].a}
+                    else
+                        data[entry]=prototype[entry]
+                    end
                 end
-                output.recipes[launch.name] = launch
+                if thetype == "entity" then
+                    data = getEnergyData(prototype,data)
+                    if data then
+                        local energyusage = data.energy_usage or data.max_energy_usage or 0
+                        local emissions = data.emissions or 0
+                        data.pollution = energyusage*emissions*60
+                    end
+                    if t == "generator" and prototype.fluidbox_prototypes and prototype.fluidbox_prototypes[1] and prototype.fluidbox_prototypes[1].filter then
+                        local fluid = prototype.fluidbox_prototypes[1].filter
+                        data.max_energy_output = (prototype.maximum_temperature-fluid.default_temperature)*60*prototype.fluid_usage_per_tick*fluid.heat_capacity
+                    end
+                    if t == "boiler" then
+                        local fluidboxes = {}
+                        for _, pro in pairs(prototype.fluidbox_prototypes) do
+                            local fluidbox = {
+                                index = pro.index,
+                                production_type = pro.production_type,
+                                minimum_temperature = pro.minimum_temperature,
+                                maximum_temperature = pro.maximum_temperature
+                            }
+                            if pro.filter then
+                                fluidbox.filter = pro.filter.name
+                            end
+                            fluidboxes[#fluidboxes+1] = fluidbox
+                        end
+                        if #fluidboxes > 2 then
+                            data.input_fluid = prototype.fluidbox_prototypes[1].filter.name
+                            data.output_fluid = prototype.fluidbox_prototypes[2].filter.name
+                        end
+                    end
+                end
+                if t == "technology" then
+                    data.prerequisites = {}
+                    for key, _ in pairs(prototype.prerequisites) do
+                        table.insert(data.prerequisites,key)
+                    end
+                end
+                if t == "movement-bonus-equipment" then
+                    data["movement_bonus"] = prototype["movement_bonus"]
+                end
+                if t == "roboport-equipment" then
+                    data["logistic_parameters"] = prototype["logistic_parameters"]
+                end
+                if t == "night-vision-equipment" then
+                    data["night_vision_tint"] = prototype["night_vision_tint"]
+                end
+                outdata[t][prototype.name] = data
             end
         end
     end
-    for name, fluid in pairs(game.fluid_prototypes) do
-        output.items[name] = fluidTable(fluid)
+    
+    -- write section
+    local folder = "recipe-lister/"
+    local filename = "crafting_data.json"
+    game.remove_path(folder)
+    if (playersettings["recipelister-split-output"].value) then
+        for category,things in pairs(outdata) do
+            game.write_file(folder..category..".json",global.json.stringify(things))
+        end
+    else
+        game.write_file(folder..filename,global.json.stringify(outdata))
     end
-
-    output.assemblers = {}
-    output.miners = {}
-    output.resources = {}
-    for name, entity in pairs(game.entity_prototypes) do
-        if (entity.type == "assembling-machine" or entity.type == "furnace" or entity.type == "rocket-silo" ) then
-            output.assemblers[name] = assemblerTable(entity)
-        end
-        if (entity.type == "mining-drill") then
-            output.miners[name] = minerTable(entity)
-        end
-        if (entity.type == "resource") then
-            output.resources[name] = resourceTable(entity)
-        end
-    end
-
-    output.versions = game.active_mods
-
-    local file = event.parameter or default_file
-    game.remove_path(file)
-    game.write_file(file, json:encode(output), true)
-
-    game.players[event.player_index].print("Export successful")
+   
 end
-
-commands.add_command("export", nil, onCommand)
+ 
+script.on_event(defines.events.on_player_created, function(event)
+    acquireData(event)
+    game.players[event.player_index].print{"recipe.hi"}
+end)
